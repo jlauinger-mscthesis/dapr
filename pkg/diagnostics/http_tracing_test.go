@@ -7,6 +7,7 @@ package diagnostics
 
 import (
 	"context"
+	"net/textproto"
 	"testing"
 
 	"github.com/dapr/dapr/pkg/config"
@@ -140,6 +141,71 @@ func TestWithNoSpanContext(t *testing.T) {
 		assert.NotEmpty(t, sc.TraceID, "Should get default traceID")
 		assert.NotEmpty(t, sc.SpanID, "Should get default spanID")
 		assert.Equal(t, 0, int(sc.TraceOptions), "Should not be sampled")
+	})
+}
+
+func TestSpanContextToResponse(t *testing.T) {
+	tests := []struct {
+		sc trace.SpanContext
+	}{
+		{
+			sc: trace.SpanContext{
+				TraceID:      trace.TraceID{75, 249, 47, 53, 119, 179, 77, 166, 163, 206, 146, 157, 14, 14, 71, 54},
+				SpanID:       trace.SpanID{0, 240, 103, 170, 11, 169, 2, 183},
+				TraceOptions: trace.TraceOptions(1),
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run("SpanContextToResponse", func(t *testing.T) {
+			resp := &fasthttp.Response{}
+			SpanContextToResponse(tt.sc, resp)
+
+			h := string(resp.Header.Peek(textproto.CanonicalMIMEHeaderKey("traceparent")))
+			got, _ := SpanContextFromString(h)
+
+			assert.Equalf(t, got, tt.sc, "SpanContextToResponse() got = %v, want %v", got, tt.sc)
+		})
+	}
+}
+
+func TestUpdateResponseHeaders(t *testing.T) {
+	daprSC := trace.SpanContext{
+		TraceID:      trace.TraceID{75, 249, 47, 53, 119, 179, 77, 166, 163, 206, 146, 157, 14, 14, 71, 54},
+		SpanID:       trace.SpanID{0, 240, 103, 170, 11, 169, 2, 183},
+		TraceOptions: trace.TraceOptions(1),
+	}
+	t.Run("No SpanContext found in the response headers", func(t *testing.T) {
+		ctx := &fasthttp.RequestCtx{Response: fasthttp.Response{}}
+		UpdateResponseHeaders(ctx, daprSC)
+		s := string(ctx.Response.Header.Peek(textproto.CanonicalMIMEHeaderKey("traceparent")))
+		got, _ := SpanContextFromString(s)
+		assert.NotEmpty(t, s, "Should get span context")
+		assert.Equal(t, daprSC.TraceID, got.TraceID, "Should get generated traceID")
+		assert.Equal(t, daprSC.SpanID, got.SpanID, "Should get generated spanID")
+		assert.Equal(t, daprSC.TraceOptions, got.TraceOptions, "Should get generated traceOptions")
+	})
+
+	t.Run("SpanContext found in the response headers", func(t *testing.T) {
+		sc := trace.SpanContext{
+			TraceID:      trace.TraceID{35, 149, 47, 53, 119, 179, 77, 166, 163, 206, 146, 157, 14, 14, 71, 54},
+			SpanID:       trace.SpanID{0, 220, 103, 170, 10, 169, 2, 183},
+			TraceOptions: trace.TraceOptions(1),
+		}
+		ctx := &fasthttp.RequestCtx{Response: fasthttp.Response{}}
+		SpanContextToResponse(sc, &ctx.Response)
+
+		// test
+		UpdateResponseHeaders(ctx, daprSC)
+		s := string(ctx.Response.Header.Peek(textproto.CanonicalMIMEHeaderKey("traceparent")))
+		got, _ := SpanContextFromString(s)
+		assert.NotEmpty(t, s, "Should get span context")
+		assert.NotEqual(t, daprSC.TraceID, got.TraceID, "Dapr generated and client generated traceID should be different")
+		assert.NotEqual(t, daprSC.SpanID, got.SpanID, "Dapr generated and client generated spanID should be different")
+
+		assert.Equal(t, sc.TraceID, got.TraceID, "Should get client generated traceID")
+		assert.Equal(t, sc.SpanID, got.SpanID, "Should get client generated spanID")
+		assert.Equal(t, sc.TraceOptions, got.TraceOptions, "Should get client generated traceOptions")
 	})
 }
 

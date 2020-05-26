@@ -55,6 +55,8 @@ func SetTracingInHTTPMiddleware(next fasthttp.RequestHandler, appID string, spec
 
 			next(ctx)
 
+			UpdateResponseHeaders(ctx, span.SpanContext())
+
 			UpdateSpanStatus(span, spanName, ctx.Response.StatusCode())
 			span.End()
 		}
@@ -180,5 +182,44 @@ func tracestateToRequest(sc trace.SpanContext, req *fasthttp.Request) {
 		if h != "" && len(h) <= maxTracestateLen {
 			req.Header.Set(tracestateHeader, h)
 		}
+	}
+}
+
+func getResponseHeader(resp *fasthttp.Response, name string) (string, bool) {
+	s := string(resp.Header.Peek(textproto.CanonicalMIMEHeaderKey(name)))
+	if s == "" {
+		return "", false
+	}
+
+	return s, true
+}
+
+func tracestateToResponse(sc trace.SpanContext, resp *fasthttp.Response) {
+	var pairs = make([]string, 0, len(sc.Tracestate.Entries()))
+	if sc.Tracestate != nil {
+		for _, entry := range sc.Tracestate.Entries() {
+			pairs = append(pairs, strings.Join([]string{entry.Key, entry.Value}, "="))
+		}
+		h := strings.Join(pairs, ",")
+
+		if h != "" && len(h) <= maxTracestateLen {
+			resp.Header.Set(tracestateHeader, h)
+		}
+	}
+}
+
+// SpanContextToResponse modifies the given response to include traceparent and tracestate headers.
+func SpanContextToResponse(sc trace.SpanContext, resp *fasthttp.Response) {
+	h := SpanContextToString(sc)
+	resp.Header.Set(traceparentHeader, h)
+	tracestateToResponse(sc, resp)
+}
+
+// UpdateResponse updates trace headers in the response
+func UpdateResponseHeaders(ctx *fasthttp.RequestCtx, sc trace.SpanContext) {
+	_, ok := getResponseHeader(&ctx.Response, traceparentHeader)
+	// if there is no response headers found, add the Dapr generated SpanContext in the response header
+	if !ok {
+		SpanContextToResponse(sc, &ctx.Response)
 	}
 }
